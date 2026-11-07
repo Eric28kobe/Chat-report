@@ -1,0 +1,15 @@
+{
+  "name": "聊天记录报告生成器",
+  "short_name": "聊天报告",
+  "description": "本地生成恋爱/亲情/友情等聊天记录分析报告，导入聊天记录即可离线生成 HTML/Markdown 报告",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f6fa",
+  "theme_color": "#5b8def",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
