@@ -386,7 +386,7 @@
   }
 
   /* ---- 截图 OCR ---- */
-  /** 预处理：放大 + 灰度 + 对比度增强（提升深色/复杂壁纸截图的识别率） */
+  /** 预处理：放大 + 灰度 + 轻度模糊 + Otsu 二值化（去深色壁纸干扰、突出文字） */
   function preprocessImage(file) {
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(file);
@@ -396,7 +396,8 @@
         try {
           var w = img.naturalWidth || img.width;
           var h = img.naturalHeight || img.height;
-          var scale = Math.min(2, Math.max(1, 1400 / Math.max(1, w)));
+          var scale = Math.min(2, Math.max(1, 1600 / Math.max(1, w)));
+          if (h * scale > 12000) scale = 12000 / h; /* 限制画布尺寸，避免手机内存溢出 */
           var cw = Math.round(w * scale), ch = Math.round(h * scale);
           var canvas = document.createElement('canvas');
           canvas.width = cw; canvas.height = ch;
@@ -404,20 +405,47 @@
           ctx.drawImage(img, 0, 0, cw, ch);
           var data = ctx.getImageData(0, 0, cw, ch);
           var px = data.data;
-          var min = 255, max = 0;
-          for (var i = 0; i < px.length; i += 4) {
-            var g = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) | 0;
-            px[i] = px[i + 1] = px[i + 2] = g;
-            if (g < min) min = g;
-            if (g > max) max = g;
+          var gray = new Uint8Array(cw * ch);
+          for (var i = 0, k = 0; i < px.length; i += 4, k++) {
+            gray[k] = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) | 0;
           }
-          var range = Math.max(1, max - min);
-          for (var j = 0; j < px.length; j += 4) {
-            /* 归一化 + 对比度增强 */
-            var v = ((px[j] - min) * 255) / range;
-            v = (v - 128) * 1.35 + 128;
-            v = v < 0 ? 0 : v > 255 ? 255 : v;
-            px[j] = px[j + 1] = px[j + 2] = v | 0;
+          /* 3x3 模糊，压掉背景噪点 */
+          var blur = new Uint8Array(cw * ch);
+          for (var y = 0; y < ch; y++) {
+            for (var x = 0; x < cw; x++) {
+              var sum = 0, cnt = 0;
+              for (var dy = -1; dy <= 1; dy++) {
+                var yy = y + dy;
+                if (yy < 0 || yy >= ch) continue;
+                for (var dx = -1; dx <= 1; dx++) {
+                  var xx = x + dx;
+                  if (xx < 0 || xx >= cw) continue;
+                  sum += gray[yy * cw + xx]; cnt++;
+                }
+              }
+              blur[y * cw + x] = (sum / cnt) | 0;
+            }
+          }
+          /* Otsu 阈值 */
+          var hist = new Array(256).fill(0);
+          for (var g2 = 0; g2 < blur.length; g2++) hist[blur[g2]]++;
+          var total = blur.length, sumAll = 0;
+          for (var t = 0; t < 256; t++) sumAll += t * hist[t];
+          var sumB = 0, wB = 0, maxVar = 0, th = 128;
+          for (var t2 = 0; t2 < 256; t2++) {
+            wB += hist[t2];
+            if (!wB) continue;
+            var wF = total - wB;
+            if (!wF) break;
+            sumB += t2 * hist[t2];
+            var mB = sumB / wB, mF = (sumAll - sumB) / wF;
+            var v = wB * wF * (mB - mF) * (mB - mF);
+            if (v > maxVar) { maxVar = v; th = t2; }
+          }
+          for (var j = 0, k2 = 0; j < px.length; j += 4, k2++) {
+            var b = blur[k2] > th ? 255 : 0;
+            px[j] = px[j + 1] = px[j + 2] = b;
+            px[j + 3] = 255;
           }
           ctx.putImageData(data, 0, 0);
           resolve({ canvas: canvas, w: cw, h: ch });
@@ -428,16 +456,28 @@
     });
   }
   function ocrRecognize(input, onProgress) {
-    return globalThis.Tesseract.createWorker('chi_sim', 1, {
+    var highAcc = !!($('ocrHighAcc') && $('ocrHighAcc').checked);
+    var opts = {
       logger: function (m) {
         if (m.status === 'recognizing text' && typeof m.progress === 'number') onProgress(Math.round(m.progress * 100));
       }
-    }).then(function (worker) {
-      return worker.recognize(input).then(function (ret) {
-        return worker.terminate().then(function () { return ret; });
-      }, function (err) {
-        return worker.terminate().then(function () { throw err; });
+    };
+    if (highAcc) opts.langPath = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/chi_sim/4.0.0_best_int';
+    function run(cfg) {
+      return globalThis.Tesseract.createWorker('chi_sim', 1, cfg).then(function (worker) {
+        return worker.setParameters({ tessedit_pageseg_mode: '11' }).then(function () {
+          return worker.recognize(input);
+        }).then(function (ret) {
+          return worker.terminate().then(function () { return ret; });
+        }, function (err) {
+          return worker.terminate().then(function () { throw err; });
+        });
       });
+    }
+    return run(opts).catch(function (err) {
+      /* 高精度模型下载失败时回退默认模型 */
+      if (highAcc) return run({ logger: opts.logger });
+      throw err;
     });
   }
   function handleImages(files) {
@@ -480,7 +520,10 @@
           $('detectInfo').innerHTML = '正在识别 ' + f.name + ' … ' + p + '%';
         }).then(function (ret) {
           var lines = (ret && ret.data && Array.isArray(ret.data.lines))
-            ? ret.data.lines.map(function (l) { return { text: l.text, bbox: l.bbox }; }) : [];
+            ? ret.data.lines
+                .filter(function (l) { return l && typeof l.confidence === 'number' ? l.confidence >= 45 : true; })
+                .map(function (l) { return { text: l.text, bbox: l.bbox }; })
+            : [];
           var model = globalThis.ChatImport.parseScreenshotOcr(lines, {
             width: prep.w, height: prep.h,
             me: { name: ($('myName').value || '').trim() },
