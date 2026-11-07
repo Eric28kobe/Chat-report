@@ -386,22 +386,54 @@
   }
 
   /* ---- 截图 OCR ---- */
-  function loadImageDims(file) {
+  /** 预处理：放大 + 灰度 + 对比度增强（提升深色/复杂壁纸截图的识别率） */
+  function preprocessImage(file) {
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(file);
       var img = new Image();
-      img.onload = function () { var d = { w: img.naturalWidth || img.width, h: img.naturalHeight || img.height }; URL.revokeObjectURL(url); resolve(d); };
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        try {
+          var w = img.naturalWidth || img.width;
+          var h = img.naturalHeight || img.height;
+          var scale = Math.min(2, Math.max(1, 1400 / Math.max(1, w)));
+          var cw = Math.round(w * scale), ch = Math.round(h * scale);
+          var canvas = document.createElement('canvas');
+          canvas.width = cw; canvas.height = ch;
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, cw, ch);
+          var data = ctx.getImageData(0, 0, cw, ch);
+          var px = data.data;
+          var min = 255, max = 0;
+          for (var i = 0; i < px.length; i += 4) {
+            var g = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) | 0;
+            px[i] = px[i + 1] = px[i + 2] = g;
+            if (g < min) min = g;
+            if (g > max) max = g;
+          }
+          var range = Math.max(1, max - min);
+          for (var j = 0; j < px.length; j += 4) {
+            /* 归一化 + 对比度增强 */
+            var v = ((px[j] - min) * 255) / range;
+            v = (v - 128) * 1.35 + 128;
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            px[j] = px[j + 1] = px[j + 2] = v | 0;
+          }
+          ctx.putImageData(data, 0, 0);
+          resolve({ canvas: canvas, w: cw, h: ch });
+        } catch (e) { reject(e); }
+      };
       img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('图片读取失败')); };
       img.src = url;
     });
   }
-  function ocrRecognize(file, onProgress) {
+  function ocrRecognize(input, onProgress) {
     return globalThis.Tesseract.createWorker('chi_sim', 1, {
       logger: function (m) {
         if (m.status === 'recognizing text' && typeof m.progress === 'number') onProgress(Math.round(m.progress * 100));
       }
     }).then(function (worker) {
-      return worker.recognize(file).then(function (ret) {
+      return worker.recognize(input).then(function (ret) {
         return worker.terminate().then(function () { return ret; });
       }, function (err) {
         return worker.terminate().then(function () { throw err; });
@@ -440,18 +472,25 @@
         '<br>首次使用需联网下载中文语言模型（约 5MB，仅一次，之后离线可用）…';
       $('detectInfo').className = 'hint';
       Promise.all([
-        loadImageDims(f),
-        ocrRecognize(f, function (p) { $('detectInfo').innerHTML = '正在识别 ' + f.name + ' … ' + p + '%'; })
+        preprocessImage(f),
+        null
       ]).then(function (r) {
-        var lines = (r[1] && r[1].data && Array.isArray(r[1].data.lines))
-          ? r[1].data.lines.map(function (l) { return { text: l.text, bbox: l.bbox }; }) : [];
-        var model = globalThis.ChatImport.parseScreenshotOcr(lines, {
-          width: r[0].w, height: r[0].h,
-          me: { name: ($('myName').value || '').trim() },
-          originalFile: f.name
+        var prep = r[0];
+        return ocrRecognize(prep.canvas, function (p) {
+          $('detectInfo').innerHTML = '正在识别 ' + f.name + ' … ' + p + '%';
+        }).then(function (ret) {
+          var lines = (ret && ret.data && Array.isArray(ret.data.lines))
+            ? ret.data.lines.map(function (l) { return { text: l.text, bbox: l.bbox }; }) : [];
+          var model = globalThis.ChatImport.parseScreenshotOcr(lines, {
+            width: prep.w, height: prep.h,
+            me: { name: ($('myName').value || '').trim() },
+            dateHint: ($('ocrDate').value || '').trim(),
+            detectSenders: !!($('ocrSenders') && $('ocrSenders').checked),
+            originalFile: f.name
+          });
+          if (model && model.messages.length) models.push(model);
+          next();
         });
-        if (model && model.messages.length) models.push(model);
-        next();
       }).catch(function (e) {
         $('detectInfo').textContent = '识别失败：' + (e && e.message ? e.message : e) + '（首次使用需联网下载语言模型）';
         $('detectInfo').className = 'hint';

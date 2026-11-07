@@ -1240,6 +1240,13 @@
 
   const TIME_RE = /^(\d{1,2}):(\d{2})$/;
   const DATE_RE = /^(\d{4})年(\d{1,2})月(\d{1,2})日/;
+  /* 「Sun 20:08」「昨天 21:40」「周一 20:08」等相对时间行 */
+  const REL_TIME_RE = /^(?:今天|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天]|Sun|Mon|Tue|Wed|Thu|Fri|Sat)[\s,，]*(\d{1,2}):(\d{2})$/i;
+  function todayLocal() {
+    const d = new Date();
+    const pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
   const COMBINED_RE = /^(.{1,12})[:：]\s*([\s\S]+)$/;
   const ME_THRESHOLD = 0.58; /* 气泡右缘超过宽度 58% 视为我的消息 */
 
@@ -1255,6 +1262,8 @@
     const width = opts.width || 1000;
     const height = opts.height || 2000;
     const meNameRaw = (opts.me && opts.me.name) ? String(opts.me.name) : '';
+    /* 默认不识别发言人名（微信单聊不显示昵称，噪声短行会被误判）；群聊时显式开启 */
+    const detectSenders = opts.detectSenders === true;
     const meName = meNameRaw.replace(/^[·•\s]+/, '').trim();
 
     if (!Array.isArray(lines) || !lines.length) {
@@ -1285,14 +1294,16 @@
         last.x1 = Math.max(last.x1, l.bbox.x1);
         last.y0 = Math.min(last.y0, l.bbox.y0);
         last.y1 = Math.max(last.y1, l.bbox.y1);
+        last.h = Math.max(last.h || 0, l.bbox.y1 - l.bbox.y0);
         last.text += ' ' + l.text.trim();
       } else {
-        rows.push({ lines: [l], text: l.text.trim(), x0: l.bbox.x0, x1: l.bbox.x1, y0: l.bbox.y0, y1: l.bbox.y1 });
+        rows.push({ lines: [l], text: l.text.trim(), x0: l.bbox.x0, x1: l.bbox.x1, y0: l.bbox.y0, y1: l.bbox.y1, h: l.bbox.y1 - l.bbox.y0 });
       }
     }
 
     /* 2. 逐排分类与组装 */
-    let currentDate = '';
+    const defaultDate = /^\d{4}-\d{2}-\d{2}$/.test(String(opts.dateHint || '')) ? opts.dateHint : todayLocal();
+    let currentDate = defaultDate;
     let pendingTime = '';
     let pendingSender = null; /* { name, side } */
     const msgs = []; /* { sender, side, date, time, lines: [] } */
@@ -1316,11 +1327,23 @@
       const row = rows[i];
       const text = row.text.trim();
       if (!text) continue;
+      /* 噪声行过滤：纯标点/符号、1-2 位拉丁碎片、孤立数字（OCR 噪点） */
+      if (/^[\s\p{P}\p{S}]+$/u.test(text)) continue;
+      if (/^[A-Za-z]{1,2}$/.test(text)) continue;
+      if (/^\d{1,2}$/.test(text)) continue;
       /* 日期分隔行 */
       const dm = DATE_RE.exec(text);
       if (dm && row.x0 < width * 0.45 && row.x1 > width * 0.55) {
         currentDate = dm[1] + '-' + pad2(+dm[2]) + '-' + pad2(+dm[3]);
         pendingSender = null;
+        continue;
+      }
+      /* 相对时间行（Sun 20:08 / 昨天 21:40） */
+      const rtm = REL_TIME_RE.exec(text);
+      if (rtm) {
+        const tval = pad2(+rtm[1]) + ':' + pad2(+rtm[2]);
+        const cmR = currentMsg();
+        if (cmR) { cmR.time = tval; cmR.closed = true; } else pendingTime = tval;
         continue;
       }
       /* 时间短行：归属当前打开的消息（并标记其已闭合）；否则挂起待用 */
@@ -1331,7 +1354,7 @@
         continue;
       }
       /* 合并格式「昵称: 内容」 */
-      const cm = COMBINED_RE.exec(text);
+      const cm = detectSenders ? COMBINED_RE.exec(text) : null;
       if (cm && text.length > 4 && text.length <= 80) {
         const side = sideOf(row);
         const sender = cm[1].replace(/^[·•\s]+/, '').trim() || (side === 'me' ? meSideName : '对方');
@@ -1348,7 +1371,9 @@
       const nextText = next ? next.text.trim() : '';
       const nextIsBubble = !!next && nextSide === side && !TIME_RE.test(nextText) && nextText.length >= 2;
       const openSameSide = !!(currentMsg() && currentMsg().side === side && !pendingSender && !currentMsg().closed);
-      const isNickname = text.length <= 12 && nextIsBubble && !TIME_RE.test(text) && !openSameSide && !pendingSender;
+      /* 昵称字号通常比正文小：行高明显小于下一行才认定为昵称 */
+      const smallerThanNext = !next || !next.h || !row.h || row.h <= next.h * 0.85 + 1;
+      const isNickname = detectSenders && text.length <= 12 && nextIsBubble && !TIME_RE.test(text) && !openSameSide && !pendingSender && smallerThanNext;
       if (isNickname) {
         pendingSender = { name: text.replace(/^[·•\s]+/, '').trim(), side: side };
         continue;
@@ -1378,7 +1403,7 @@
       else { m.realTime = false; m.time = lastTime || '12:00'; }
     }
     const rawMessages = msgs.map(function (m) {
-      const d = m.date || '2024-01-01';
+      const d = m.date || defaultDate;
       const iso = d + 'T' + pad2(parseInt(m.time.split(':')[0], 10) || 12) + ':' +
         pad2(parseInt(m.time.split(':')[1], 10) || 0) + ':00+08:00';
       const content = m.lines.join('\n').trim();

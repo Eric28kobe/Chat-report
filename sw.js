@@ -1,5 +1,5 @@
 /* app/sw.js —— Service Worker：缓存全部应用资源，安装后完全离线可用 */
-const CACHE = 'chat-app-1794017881051';
+const CACHE = 'chat-app-1794038385329';
 const ASSETS = [
   './', './index.html', './app.css', './app.js', './manifest.webmanifest',
   './vendor/report.umd.js', './vendor/import.umd.js',

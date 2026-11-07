@@ -15,7 +15,7 @@
 <body>
 <div class="layout">
   <aside class="sidebar">
-    <div class="side-head">📊 聊天记录报告生成器<span class="offline-tag" id="offlineTag" hidden>离线可用</span></div>
+    <div class="side-head">📊 聊天记录报告生成器<span class="offline-tag" id="offlineTag" hidden>离线可用</span><span class="ver-tag" id="verTag">v0.2.1</span></div>
 
     <div class="group">
       <div class="group-title">① 导入聊天记录</div>
@@ -30,12 +30,15 @@
       </div>
       <div class="btn-row">
         <button id="btnPickImages">选择聊天截图（OCR）</button>
+        <input type="date" id="ocrDate" title="截图对应的日期（可选，截图没有日期分隔线时填写）">
+        <label class="chk"><input type="checkbox" id="ocrSenders"> 识别群聊发言人名</label>
         <button id="btnLoadDemo">载入演示数据集</button>
       </div>
       <input type="file" id="importFile" accept=".txt,.json,.csv" multiple hidden>
       <input type="file" id="folderInput" webkitdirectory hidden>
       <input type="file" id="imgInput" accept="image/png,image/jpeg,image/webp" multiple hidden>
       <div class="hint" id="detectInfo"></div>
+      <div class="hint">截图 OCR 建议选择带日期分隔线的截图；没有日期时可先填上面的日期再识别。</div>
     </div>
 
     <div class="group">

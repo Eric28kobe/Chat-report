@@ -78,3 +78,7 @@ button.mini.danger { color: #d64545; }
 .speaker-btn { border: 1px solid #c8d3e8; background: #f0f4fb; color: #3e6fd0; border-radius: 7px;
                padding: 4px 10px; cursor: pointer; font-size: 11px; }
 .speaker-btn:hover { background: #e4ecfa; }
+
+.ver-tag { font-size: 10px; color: #8a91a3; background: #eef1f7; border-radius: 6px; padding: 2px 6px; font-weight: 600; }
+.chk { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #6a7285; }
+.chk input { accent-color: #5b8def; }
